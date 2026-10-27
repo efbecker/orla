@@ -1,0 +1,38 @@
+# Orla panel: one Node.js process (REST API, SPA, background jobs).
+# Installed to /etc/systemd/system/orla.service.
+[Unit]
+Description=Orla - Nginx Reverse Proxy & Edge Manager
+Documentation=https://github.com/efbecker/orla
+Wants=network-online.target
+After=network-online.target postgresql.service nginx.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=orla
+Group=orla
+WorkingDirectory=/opt/orla
+EnvironmentFile=/etc/orla/orla.env
+Environment=NODE_ENV=production
+ExecStartPre=/opt/orla/node_modules/.bin/prisma migrate deploy
+ExecStart=/usr/bin/node /opt/orla/dist/server/index.js
+Restart=always
+RestartSec=2
+TimeoutStopSec=20
+
+# Bind the panel port (81 by default) without running as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# Hardening compatible with sudo (no NoNewPrivileges: the pipeline runs
+# `sudo -n nginx -t` and `sudo -n systemctl reload nginx`).
+ProtectSystem=true
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LimitNOFILE=65535
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

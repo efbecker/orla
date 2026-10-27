@@ -1,0 +1,15 @@
+# Installed to /etc/logrotate.d/orla.
+/var/log/orla/nginx/*.log /var/log/orla/nginx/*.json {
+    daily
+    rotate 14
+    maxsize 200M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    sharedscripts
+    create 0640 www-data orla
+    postrotate
+        invoke-rc.d nginx rotate >/dev/null 2>&1 || true
+    endscript
+}

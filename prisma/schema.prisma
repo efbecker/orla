@@ -1,0 +1,730 @@
+// Orla: Nginx Reverse Proxy & Edge Manager
+//
+// The database is the single source of truth. Every Nginx file under
+// /etc/nginx/conf.d and /etc/nginx/orla/generated is compiled from these
+// models; existing .conf files are never parsed back into state.
+//
+// Database: PostgreSQL 17 (Debian 13 package), local socket or TCP via
+// DATABASE_URL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+enum UpstreamScheme {
+  HTTP
+  HTTPS
+}
+
+enum LoadBalancingAlgorithm {
+  ROUND_ROBIN
+  LEAST_CONN
+  IP_HASH
+}
+
+enum SslMode {
+  OFF
+  FLEXIBLE
+  FULL
+  FULL_STRICT
+}
+
+enum TlsVersion {
+  TLS_1_2
+  TLS_1_3
+}
+
+enum CertificateType {
+  ACME
+  CUSTOM
+}
+
+enum CertificateStatus {
+  PENDING
+  VALID
+  EXPIRED
+  ERROR
+  REVOKED
+}
+
+enum AcmeProvider {
+  LETSENCRYPT
+  LETSENCRYPT_STAGING
+  ZEROSSL
+}
+
+enum AcmeChallengeType {
+  HTTP_01
+  DNS_01
+}
+
+enum DnsProviderType {
+  CLOUDFLARE
+  DIGITALOCEAN
+  ROUTE53
+  HETZNER
+  MANUAL
+}
+
+enum PathMatchType {
+  EXACT
+  PREFIX
+  WILDCARD
+  REGEX
+  REGEX_CASE_INSENSITIVE
+}
+
+enum RedirectStatusCode {
+  MOVED_PERMANENTLY_301
+  FOUND_302
+  TEMPORARY_REDIRECT_307
+  PERMANENT_REDIRECT_308
+}
+
+enum HeaderPhase {
+  REQUEST
+  RESPONSE
+}
+
+enum HeaderOperation {
+  SET
+  ADD
+  REMOVE
+}
+
+enum RateLimitPeriod {
+  SECOND
+  MINUTE
+}
+
+enum RateLimitKey {
+  IP
+  IP_AND_PATH
+}
+
+enum IpListType {
+  ALLOWLIST
+  BLOCKLIST
+}
+
+enum AuthMode {
+  NONE
+  BASIC
+  EXTERNAL
+}
+
+enum PasswordHashAlgorithm {
+  BCRYPT
+  APR1
+}
+
+enum CacheMode {
+  STATIC_ONLY
+  ALL
+}
+
+enum DeploymentStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+  ROLLED_BACK
+}
+
+enum DeploymentTrigger {
+  USER
+  BOOT
+  CERTIFICATE_RENEWAL
+  SYSTEM
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  TOGGLE
+  APPLY
+  PURGE_CACHE
+  ISSUE_CERTIFICATE
+  RENEW_CERTIFICATE
+  LOGIN
+  LOGIN_FAILED
+  LOGOUT
+}
+
+enum TrafficTopKind {
+  IP
+  PATH
+}
+
+// ---------------------------------------------------------------------------
+// Panel users, sessions and global settings
+// ---------------------------------------------------------------------------
+
+model User {
+  id           Int       @id @default(autoincrement())
+  email        String    @unique
+  name         String
+  passwordHash String
+  role         UserRole  @default(VIEWER)
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  sessions    Session[]
+  auditLogs   AuditLog[]
+  deployments Deployment[]
+}
+
+// Refresh-token sessions for the panel JWT auth. Only the SHA-256 hash of the
+// refresh token is stored.
+model Session {
+  id        String    @id @default(cuid())
+  userId    Int
+  tokenHash String    @unique
+  userAgent String?
+  ipAddress String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// Key/value store for global settings (default ACME email, log retention,
+// analytics bucket retention, panel branding). Values are JSON documents
+// validated by Zod in the settings module.
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Traffic: proxy hosts, domains, upstream pools and custom locations
+// ---------------------------------------------------------------------------
+
+model ProxyHost {
+  id          Int     @id @default(autoincrement())
+  name        String
+  description String?
+  enabled     Boolean @default(true)
+
+  // "Orange cloud": when false the host is a plain pass-through proxy and the
+  // protection/cache layers (rate limits, security presets, bad-bot blocking,
+  // proxy_cache) are not rendered, while TLS, redirects and auth still apply.
+  edgeProtectionEnabled Boolean @default(true)
+
+  // Maintenance mode answers every request with a 503 page.
+  maintenanceEnabled Boolean @default(false)
+  maintenanceTitle   String?
+  maintenanceMessage String?
+  maintenanceHtml    String?
+
+  // Default target. Null means the host only serves redirects, maintenance or
+  // locations that declare their own pool.
+  upstreamPoolId Int?
+
+  // Protocol toggles
+  websocketEnabled Boolean @default(false)
+  http2Enabled     Boolean @default(true)
+  http3Enabled     Boolean @default(false)
+
+  // SSL/TLS
+  sslMode               SslMode    @default(OFF)
+  certificateId         Int?
+  forceHttps            Boolean    @default(false)
+  hstsEnabled           Boolean    @default(false)
+  hstsMaxAge            Int        @default(31536000)
+  hstsIncludeSubdomains Boolean    @default(false)
+  hstsPreload           Boolean    @default(false)
+  minTlsVersion         TlsVersion @default(TLS_1_2)
+  // Full / Full (Strict): SNI and trust store used towards the origin.
+  originServerName      String?
+  originTrustedCaPem    String?
+
+  // Caching & speed
+  cacheEnabled               Boolean   @default(false)
+  cacheMode                  CacheMode @default(STATIC_ONLY)
+  cacheDefaultTtlSeconds     Int       @default(3600)
+  cacheRespectOriginHeaders  Boolean   @default(true)
+  cacheServeStaleOnError     Boolean   @default(true)
+  cacheLastPurgedAt          DateTime?
+  gzipEnabled                Boolean   @default(true)
+  brotliEnabled              Boolean   @default(false)
+  clientMaxBodySizeMb        Int       @default(10)
+  proxyConnectTimeoutSeconds Int       @default(60)
+  proxyReadTimeoutSeconds    Int       @default(60)
+  proxySendTimeoutSeconds    Int       @default(60)
+  proxyBufferingEnabled      Boolean   @default(true)
+
+  // Security
+  securityHeadersEnabled Boolean  @default(false)
+  contentSecurityPolicy  String?
+  blockBadBotsEnabled    Boolean  @default(false)
+  authMode               AuthMode @default(NONE)
+  basicAuthRealmId       Int?
+  externalAuthUrl        String?
+
+  // Escape hatch, editable by ADMIN users only. Appended verbatim inside the
+  // server block after `nginx -t` validation.
+  customDirectives String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  domains        HostDomain[]
+  upstreamPool   UpstreamPool?   @relation("HostDefaultPool", fields: [upstreamPoolId], references: [id], onDelete: SetNull)
+  certificate    Certificate?    @relation(fields: [certificateId], references: [id], onDelete: SetNull)
+  basicAuthRealm BasicAuthRealm? @relation(fields: [basicAuthRealmId], references: [id], onDelete: SetNull)
+  locations      Location[]
+  redirectRules  RedirectRule[]
+  headerRules    HeaderRule[]
+  rateLimitRules RateLimitRule[]
+  ipLists        HostIpList[]
+
+  @@index([upstreamPoolId])
+  @@index([certificateId])
+}
+
+// One host answers for one or more server_name entries. Wildcards such as
+// *.example.com are allowed and validated by the sanitizer.
+model HostDomain {
+  id        Int      @id @default(autoincrement())
+  hostId    Int
+  domain    String   @unique
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  host ProxyHost @relation(fields: [hostId], references: [id], onDelete: Cascade)
+
+  @@index([hostId])
+}
+
+// Rendered as `upstream orla_pool_{id} { ... }`. Pools are reusable by
+// several hosts and locations.
+model UpstreamPool {
+  id                   Int                    @id @default(autoincrement())
+  name                 String                 @unique
+  description          String?
+  scheme               UpstreamScheme         @default(HTTP)
+  algorithm            LoadBalancingAlgorithm @default(ROUND_ROBIN)
+  keepaliveConnections Int                    @default(32)
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+
+  servers   UpstreamServer[]
+  hosts     ProxyHost[]      @relation("HostDefaultPool")
+  locations Location[]
+}
+
+// Passive health checks map to max_fails / fail_timeout / backup / down.
+model UpstreamServer {
+  id                 Int      @id @default(autoincrement())
+  poolId             Int
+  address            String
+  port               Int
+  weight             Int      @default(1)
+  maxFails           Int      @default(3)
+  failTimeoutSeconds Int      @default(10)
+  isBackup           Boolean  @default(false)
+  isDown             Boolean  @default(false)
+  sortOrder          Int      @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  pool UpstreamPool @relation(fields: [poolId], references: [id], onDelete: Cascade)
+
+  @@unique([poolId, address, port])
+  @@index([poolId])
+}
+
+// Path based routing inside a host (e.g. /api/ -> pool A, / -> pool B).
+// Nullable overrides inherit the host value.
+model Location {
+  id             Int           @id @default(autoincrement())
+  hostId         Int
+  path           String
+  matchType      PathMatchType @default(PREFIX)
+  upstreamPoolId Int?
+  // Optional path rewrite sent upstream (proxy_pass http://pool/rewritePath).
+  rewritePath    String?
+  priority       Int           @default(0)
+  enabled        Boolean       @default(true)
+
+  websocketEnabled    Boolean?
+  cacheEnabled        Boolean?
+  clientMaxBodySizeMb Int?
+  authMode            AuthMode?
+  basicAuthRealmId    Int?
+  externalAuthUrl     String?
+  customDirectives    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  host           ProxyHost        @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  upstreamPool   UpstreamPool?    @relation(fields: [upstreamPoolId], references: [id], onDelete: SetNull)
+  basicAuthRealm BasicAuthRealm?  @relation(fields: [basicAuthRealmId], references: [id], onDelete: SetNull)
+  headerRules    HeaderRule[]
+  rateLimitRules RateLimitRule[]
+  ipLists        LocationIpList[]
+
+  @@unique([hostId, matchType, path])
+  @@index([hostId])
+}
+
+// ---------------------------------------------------------------------------
+// SSL/TLS: certificates, ACME accounts and DNS providers
+// ---------------------------------------------------------------------------
+
+model Certificate {
+  id        Int               @id @default(autoincrement())
+  name      String
+  type      CertificateType
+  status    CertificateStatus @default(PENDING)
+  autoRenew Boolean           @default(true)
+
+  // ACME only
+  acmeAccountId Int?
+  challengeType AcmeChallengeType?
+  dnsProviderId Int?
+
+  // PEM material. The private key is encrypted at rest with ORLA_ENCRYPTION_KEY
+  // (AES-256-GCM) and only written in clear to the Nginx certs directory.
+  certificatePem      String?
+  chainPem            String?
+  privateKeyEncrypted String?
+
+  // Parsed metadata
+  issuer       String?
+  serialNumber String?
+  fingerprint  String?
+  notBefore    DateTime?
+  notAfter     DateTime?
+
+  lastRenewAttemptAt DateTime?
+  lastError          String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  domains     CertificateDomain[]
+  hosts       ProxyHost[]
+  acmeAccount AcmeAccount?        @relation(fields: [acmeAccountId], references: [id], onDelete: SetNull)
+  dnsProvider DnsProvider?        @relation(fields: [dnsProviderId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([notAfter])
+}
+
+model CertificateDomain {
+  id            Int    @id @default(autoincrement())
+  certificateId Int
+  domain        String
+
+  certificate Certificate @relation(fields: [certificateId], references: [id], onDelete: Cascade)
+
+  @@unique([certificateId, domain])
+  @@index([domain])
+}
+
+model AcmeAccount {
+  id                  Int          @id @default(autoincrement())
+  provider            AcmeProvider
+  email               String
+  directoryUrl        String
+  accountUrl          String?
+  accountKeyEncrypted String
+  // External Account Binding (required by ZeroSSL).
+  eabKeyId            String?
+  eabHmacKeyEncrypted String?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  certificates Certificate[]
+
+  @@unique([provider, email])
+}
+
+// DNS-01 challenge providers (wildcard certificates). Credentials are a JSON
+// document encrypted at rest; MANUAL means the user creates the TXT record.
+model DnsProvider {
+  id                   Int             @id @default(autoincrement())
+  name                 String          @unique
+  type                 DnsProviderType
+  credentialsEncrypted String?
+  propagationSeconds   Int             @default(60)
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  certificates Certificate[]
+}
+
+// ---------------------------------------------------------------------------
+// Rules: redirects and transform (header) rules
+// ---------------------------------------------------------------------------
+
+model RedirectRule {
+  id            Int                @id @default(autoincrement())
+  hostId        Int
+  name          String
+  enabled       Boolean            @default(true)
+  matchType     PathMatchType      @default(PREFIX)
+  sourcePath    String             @default("/")
+  targetUrl     String
+  statusCode    RedirectStatusCode @default(MOVED_PERMANENTLY_301)
+  preservePath  Boolean            @default(true)
+  preserveQuery Boolean            @default(true)
+  priority      Int                @default(0)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  host ProxyHost @relation(fields: [hostId], references: [id], onDelete: Cascade)
+
+  @@index([hostId])
+}
+
+// REQUEST rules render proxy_set_header; RESPONSE rules render add_header
+// (SET/ADD) or more_clear_headers / proxy_hide_header (REMOVE).
+// locationId null applies the rule to the whole host.
+model HeaderRule {
+  id          Int             @id @default(autoincrement())
+  hostId      Int
+  locationId  Int?
+  phase       HeaderPhase
+  operation   HeaderOperation
+  headerName  String
+  headerValue String?
+  // add_header ... always
+  always      Boolean         @default(false)
+  priority    Int             @default(0)
+  enabled     Boolean         @default(true)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  host     ProxyHost @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  location Location? @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@index([hostId])
+  @@index([locationId])
+}
+
+// ---------------------------------------------------------------------------
+// Security: rate limiting, IP lists and edge authentication
+// ---------------------------------------------------------------------------
+
+// Each rule compiles to its own `limit_req_zone ... zone=orla_rl_{id}` in the
+// generated http.d directory and a `limit_req` in the host or location.
+model RateLimitRule {
+  id         Int             @id @default(autoincrement())
+  hostId     Int
+  locationId Int?
+  name       String
+  enabled    Boolean         @default(true)
+  key        RateLimitKey    @default(IP)
+  requests   Int
+  period     RateLimitPeriod @default(SECOND)
+  burst      Int             @default(0)
+  nodelay    Boolean         @default(true)
+  zoneSizeMb Int             @default(10)
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  host     ProxyHost @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  location Location? @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@index([hostId])
+  @@index([locationId])
+}
+
+// Reusable allow/deny lists, rendered once to
+// /etc/nginx/orla/generated/ip-lists/list-{id}.conf and included by hosts.
+model IpList {
+  id          Int        @id @default(autoincrement())
+  name        String     @unique
+  description String?
+  type        IpListType
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  entries   IpListEntry[]
+  hosts     HostIpList[]
+  locations LocationIpList[]
+}
+
+model IpListEntry {
+  id        Int      @id @default(autoincrement())
+  ipListId  Int
+  cidr      String
+  comment   String?
+  createdAt DateTime @default(now())
+
+  ipList IpList @relation(fields: [ipListId], references: [id], onDelete: Cascade)
+
+  @@unique([ipListId, cidr])
+}
+
+model HostIpList {
+  hostId   Int
+  ipListId Int
+  priority Int @default(0)
+
+  host   ProxyHost @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  ipList IpList    @relation(fields: [ipListId], references: [id], onDelete: Cascade)
+
+  @@id([hostId, ipListId])
+  @@index([ipListId])
+}
+
+model LocationIpList {
+  locationId Int
+  ipListId   Int
+  priority   Int @default(0)
+
+  location Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  ipList   IpList   @relation(fields: [ipListId], references: [id], onDelete: Cascade)
+
+  @@id([locationId, ipListId])
+  @@index([ipListId])
+}
+
+// Rendered as an htpasswd file at
+// /etc/nginx/orla/generated/htpasswd/realm-{id}.
+model BasicAuthRealm {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  realm       String   @default("Área restrita")
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users     BasicAuthUser[]
+  hosts     ProxyHost[]
+  locations Location[]
+}
+
+model BasicAuthUser {
+  id            Int                   @id @default(autoincrement())
+  realmId       Int
+  username      String
+  passwordHash  String
+  hashAlgorithm PasswordHashAlgorithm @default(BCRYPT)
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  realm BasicAuthRealm @relation(fields: [realmId], references: [id], onDelete: Cascade)
+
+  @@unique([realmId, username])
+}
+
+// ---------------------------------------------------------------------------
+// Config pipeline history and audit trail
+// ---------------------------------------------------------------------------
+
+// One row per run of the transactional pipeline
+// (snapshot -> write -> nginx -t -> reload | rollback).
+model Deployment {
+  id              Int               @id @default(autoincrement())
+  status          DeploymentStatus  @default(RUNNING)
+  trigger         DeploymentTrigger @default(USER)
+  triggeredById   Int?
+  summary         String
+  // Map of relative file path -> SHA-256 of the rendered content.
+  fileHashes      Json?
+  nginxTestOutput String?
+  errorMessage    String?
+  durationMs      Int?
+  startedAt       DateTime          @default(now())
+  finishedAt      DateTime?
+
+  triggeredBy User? @relation(fields: [triggeredById], references: [id], onDelete: SetNull)
+
+  @@index([startedAt])
+}
+
+// Who changed what and when. actorEmail is denormalized so entries survive
+// user deletion.
+model AuditLog {
+  id         Int         @id @default(autoincrement())
+  userId     Int?
+  actorEmail String?
+  action     AuditAction
+  entityType String
+  entityId   String?
+  summary    String
+  before     Json?
+  after      Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime    @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([entityType, entityId])
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Analytics, aggregated from the JSON access log
+// ---------------------------------------------------------------------------
+
+// hostId is the `$orla_host_id` value logged by Nginx (0 = default server).
+// It is intentionally not a foreign key so that historical metrics survive
+// host deletion and the default server can be tracked; retention jobs prune
+// old buckets.
+model TrafficBucket {
+  id                Int      @id @default(autoincrement())
+  hostId            Int
+  bucketStart       DateTime
+  requests          Int      @default(0)
+  bytesSent         BigInt   @default(0)
+  bytesReceived     BigInt   @default(0)
+  status1xx         Int      @default(0)
+  status2xx         Int      @default(0)
+  status3xx         Int      @default(0)
+  status4xx         Int      @default(0)
+  status5xx         Int      @default(0)
+  cacheHit          Int      @default(0)
+  cacheMiss         Int      @default(0)
+  cacheBypass       Int      @default(0)
+  cacheExpired      Int      @default(0)
+  cacheOther        Int      @default(0)
+  requestTimeSumMs  BigInt   @default(0)
+  upstreamTimeSumMs BigInt   @default(0)
+
+  @@unique([hostId, bucketStart])
+  @@index([bucketStart])
+}
+
+// Top IPs / paths per host per hour.
+model TrafficTopEntry {
+  id          Int            @id @default(autoincrement())
+  hostId      Int
+  bucketStart DateTime
+  kind        TrafficTopKind
+  value       String
+  requests    Int            @default(0)
+  bytesSent   BigInt         @default(0)
+
+  @@unique([hostId, bucketStart, kind, value])
+  @@index([bucketStart])
+}

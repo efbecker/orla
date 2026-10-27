@@ -1,0 +1,22 @@
+{
+  "name": "orla",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Painel de controle Nginx (Reverse Proxy & Edge Manager) inspirado na Cloudflare, para Debian 13 com PostgreSQL",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "prisma:format": "prisma format",
+    "prisma:validate": "prisma validate",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate:dev": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.0",
+    "prisma": "^6.19.0"
+  }
+}

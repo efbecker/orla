@@ -1,0 +1,8 @@
+# Installed to /etc/sudoers.d/orla (mode 0440).
+# The panel may only validate the Nginx configuration and reload Nginx.
+# Arguments are fixed: sudo rejects any other argument list.
+Defaults:orla !requiretty
+Defaults:orla env_reset
+
+orla ALL=(root) NOPASSWD: /usr/sbin/nginx -t
+orla ALL=(root) NOPASSWD: /usr/bin/systemctl reload nginx.service
