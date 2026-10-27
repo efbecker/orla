@@ -76,9 +76,7 @@ enum AcmeChallengeType {
 enum DnsProviderType {
   CLOUDFLARE
   DIGITALOCEAN
-  ROUTE53
   HETZNER
-  MANUAL
 }
 
 enum PathMatchType {
@@ -465,7 +463,7 @@ model AcmeAccount {
 }
 
 // DNS-01 challenge providers (wildcard certificates). Credentials are a JSON
-// document encrypted at rest; MANUAL means the user creates the TXT record.
+// document (API token) encrypted at rest.
 model DnsProvider {
   id                   Int             @id @default(autoincrement())
   name                 String          @unique

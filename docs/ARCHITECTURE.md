@@ -79,8 +79,8 @@ O `deploy/install.sh` é idempotente (rodar de novo atualiza) e:
 │   └── host-{id}.conf               um arquivo por Proxy Host (upstreams + servers)
 └── orla/
     ├── default.d/00-default.conf    instalado: servidores padrão 80/443 (ACME + 444)
-    ├── snippets/                    instalado: proxy-headers, websocket, acme-challenge,
-    │                                block-bad-bots, edge-protection
+    ├── snippets/                    instalado: acme-challenge, block-bad-bots,
+    │                                edge-protection
     ├── runtime/                     gerado pelo orla-nginx-prepare
     └── generated/                   orla, gerado pelo painel
         ├── http.d/                  limit_req_zone por regra de rate limit

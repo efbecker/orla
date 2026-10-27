@@ -9,6 +9,11 @@
     "node": ">=20.19.0"
   },
   "scripts": {
+    "dev": "tsx watch server/src/index.ts",
+    "build": "tsc -p server/tsconfig.json",
+    "start": "node dist/server/index.js",
+    "typecheck": "tsc -p server/tsconfig.test.json",
+    "test": "vitest run",
     "prisma:format": "prisma format",
     "prisma:validate": "prisma validate",
     "prisma:generate": "prisma generate",
@@ -16,7 +21,20 @@
     "prisma:migrate:deploy": "prisma migrate deploy"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.1.5",
+    "@fastify/jwt": "^10.2.5",
+    "@fastify/rate-limit": "^11.2.1",
     "@prisma/client": "^6.19.0",
-    "prisma": "^6.19.0"
+    "acme-client": "^5.4.0",
+    "bcryptjs": "^3.0.3",
+    "fastify": "^5.12.7",
+    "prisma": "^6.19.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
   }
 }
