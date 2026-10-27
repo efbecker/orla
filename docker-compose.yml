@@ -1,0 +1,84 @@
+# Orla: Nginx Reverse Proxy & Edge Manager
+#
+# Monolithic deployment: one container runs Nginx and the panel. Target host:
+# Debian 13 (trixie) with Docker Engine + Compose plugin.
+#
+#   cp .env.example .env   # fill in the secrets
+#   docker compose up -d --build
+#
+# Panel: http://<server>:81 (bind it to 127.0.0.1 or a VPN address in
+# production via ORLA_PANEL_BIND).
+
+name: orla
+
+services:
+  orla:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: orla:latest
+    container_name: orla
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
+      DATABASE_URL: file:/var/lib/orla/data/orla.db
+      ORLA_PANEL_HOST: 0.0.0.0
+      ORLA_PANEL_PORT: "3000"
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+      - "443:443/udp" # HTTP/3 (QUIC)
+      - "${ORLA_PANEL_BIND:-0.0.0.0}:${ORLA_PANEL_PORT_PUBLIC:-81}:3000/tcp"
+    # Nginx and the panel run as the unprivileged `orla` user; this lets the
+    # master process bind 80/443 inside the container's network namespace.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    # The entrypoint starts as root only to prepare volume permissions and then
+    # drops to `orla` with gosu. KILL lets the root supervisor (tini/entrypoint)
+    # and the healthcheck signal the processes owned by `orla`.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - KILL
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    volumes:
+      - orla-data:/var/lib/orla # SQLite DB, ACME webroot, snapshots
+      - orla-hosts:/etc/nginx/conf.d # host-{id}.conf (compiled from the DB)
+      - orla-generated:/etc/nginx/orla/generated # zones, IP lists, htpasswd, certs, pages
+      - orla-logs:/var/log/orla # JSON access log + error log
+      - orla-cache:/var/cache/orla # proxy_cache + temp files
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -s /run/orla/nginx.pid
+          && kill -0 "$$(cat /run/orla/nginx.pid)"
+          && curl -fsS -o /dev/null http://127.0.0.1:3000/api/health
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  orla-data:
+  orla-hosts:
+  orla-generated:
+  orla-logs:
+  orla-cache:
