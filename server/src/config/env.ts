@@ -47,6 +47,9 @@ const envSchema = z.object({
   ORLA_NGINX_ERROR_LOG: z.string().default("/var/log/orla/nginx/error.log"),
   ORLA_SYSTEM_CA_BUNDLE: z.string().default("/etc/ssl/certs/ca-certificates.crt"),
 
+  // Built SPA (npm run build:web). Defaults to dist/web next to the server build.
+  ORLA_WEB_DIR: optional(z.string()),
+
   ORLA_NGINX_TEST_COMMAND: commandFromString.default("sudo -n /usr/sbin/nginx -t"),
   ORLA_NGINX_RELOAD_COMMAND: commandFromString.default("sudo -n /usr/bin/systemctl reload nginx.service"),
   ORLA_CACHE_PURGE_COMMAND: commandFromString.default("sudo -n /usr/lib/orla/bin/orla-cache-purge"),

@@ -161,16 +161,16 @@ orla/
 │       │                            upstreams, ip-lists, auth-realms, certificates,
 │       │                            dns-providers, analytics, logs, system
 │       └── jobs/                    coletor de log JSON, renovação de certificados, retenção
-└── web/                             [4][5]
-    ├── index.html
-    ├── vite.config.ts
+└── web/                             [4][5] painel (React + Vite + Tailwind + shadcn/ui)
+    ├── index.html  vite.config.ts  tailwind.config.ts
     └── src/
         ├── main.tsx  app/router.tsx
-        ├── components/ui/           shadcn/ui
-        ├── components/layout/       sidebar por domínio, topbar, tema dark/light
-        ├── lib/                     cliente da API, TanStack Query, utilitários
+        ├── components/ui/           componentes shadcn/ui (Radix)
+        ├── components/layout/       barra superior, seletor de sites, menu lateral por site, tema
+        ├── components/              cabeçalhos, estados vazios/erro, visualizador de .conf, erros do nginx -t
+        ├── lib/                     cliente da API (token em memória + refresh), auth, TanStack Query, formatação
         └── features/
-            ├── auth/  dashboard/  hosts/  upstreams/       [4]
+            ├── auth/  dashboard/  hosts/  upstreams/                      [4]
             └── ssl/  rules/  security/  caching/  logs/  audit/  settings/   [5]
 ```
 
@@ -228,6 +228,23 @@ tudo a partir da transação, aplica com `nginx -t` e reload e só então faz o 
 Se o Nginx recusar, o banco volta ao estado anterior e a API responde `422
 NGINX_TEST_FAILED` com arquivo, linha e trecho do erro. Cada aplicação fica em
 `/deployments` e cada ação em `/audit-logs`.
+
+## Painel (Etapa 4)
+
+O build do Vite vai para `dist/web` e o próprio Fastify serve os arquivos na porta
+do painel, com fallback para `index.html` nas rotas do SPA. As respostas levam CSP
+(`script-src 'self'`, `frame-ancestors 'none'`), `X-Frame-Options: DENY` e
+`nosniff`; os assets com hash têm cache de 1 ano e o `index.html` não é cacheado.
+
+O token de acesso fica só na memória do navegador. Ao abrir o painel, o cookie
+`orla_refresh` (httpOnly, `SameSite=Strict`, restrito a `/api/auth`) gera um novo
+token; um 401 dispara uma renovação única e repete a requisição.
+
+Telas da Etapa 4: login, visão geral (tráfego, códigos de resposta, recursos do
+Nginx, sites e IPs com mais tráfego), lista de sites com busca e liga/desliga,
+criação de site com prévia do `.conf`, página do site (tráfego, ajustes rápidos,
+origem e desempenho, configuração Nginx com diretivas personalizadas para admin)
+e pools de upstream.
 
 ## Segurança de rede do painel
 

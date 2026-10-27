@@ -10,7 +10,12 @@ import type { Tx } from "../services/config-service.js";
 
 export const hostDetailInclude = {
   domains: { orderBy: [{ isPrimary: "desc" }, { domain: "asc" }] },
-  upstreamPool: { include: { servers: { orderBy: [{ sortOrder: "asc" }, { id: "asc" }] } } },
+  upstreamPool: {
+    include: {
+      servers: { orderBy: [{ sortOrder: "asc" }, { id: "asc" }] },
+      _count: { select: { hosts: true, locations: true } },
+    },
+  },
   certificate: {
     select: { id: true, name: true, type: true, status: true, notAfter: true, domains: { select: { domain: true } } },
   },
@@ -135,21 +140,39 @@ async function uniquePoolName(tx: Tx, base: string): Promise<string> {
   return candidate;
 }
 
+async function createOriginPool(tx: Tx, label: string, upstream: z.infer<typeof upstreamShortcut>): Promise<number> {
+  const pool = await tx.upstreamPool.create({
+    data: {
+      name: await uniquePoolName(tx, label.replace(/^\*\./, "")),
+      scheme: upstream.scheme,
+      servers: { create: [{ address: upstream.address, port: upstream.port }] },
+    },
+  });
+  return pool.id;
+}
+
 /** Creates or updates a host from validated fields; shared by save and preview. */
 export async function applyHostFields(tx: Tx, id: number | null, input: HostFields): Promise<number> {
   const { domains, upstream, ipListIds, ...fields } = input;
   const data: Prisma.ProxyHostUncheckedUpdateInput = { ...fields };
 
   if (upstream) {
-    const base = domains?.[0]?.replace(/^\*\./, "") ?? fields.name ?? "upstream";
-    const pool = await tx.upstreamPool.create({
-      data: {
-        name: await uniquePoolName(tx, base),
-        scheme: upstream.scheme,
-        servers: { create: [{ address: upstream.address, port: upstream.port }] },
-      },
-    });
-    data.upstreamPoolId = pool.id;
+    // Editing the single origin of a host updates its private pool in place
+    // instead of leaving the old pool behind.
+    const current = id
+      ? await tx.proxyHost.findUnique({
+          where: { id },
+          select: { upstreamPool: { include: { servers: true, _count: { select: { hosts: true, locations: true } } } } },
+        })
+      : null;
+    const own = current?.upstreamPool;
+    if (own && own._count.hosts === 1 && own._count.locations === 0 && own.servers.length === 1 && own.servers[0]) {
+      await tx.upstreamPool.update({ where: { id: own.id }, data: { scheme: upstream.scheme } });
+      await tx.upstreamServer.update({ where: { id: own.servers[0].id }, data: { address: upstream.address, port: upstream.port } });
+      data.upstreamPoolId = own.id;
+    } else {
+      data.upstreamPoolId = await createOriginPool(tx, domains?.[0] ?? fields.name ?? "upstream", upstream);
+    }
   }
 
   if (domains) {

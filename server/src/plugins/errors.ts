@@ -14,10 +14,6 @@ const HTTP_ERROR_CODES: Record<number, string> = {
 
 /** Maps domain errors to JSON responses: { error, message, details? }. */
 export function registerErrorHandler(app: FastifyInstance): void {
-  app.setNotFoundHandler((request, reply) => {
-    void reply.status(404).send({ error: "NOT_FOUND", message: `Rota não encontrada: ${request.method} ${request.url}` });
-  });
-
   app.setErrorHandler((error: FastifyError | Error, request, reply) => {
     if (error instanceof HttpError) {
       return reply.status(error.statusCode).send({
