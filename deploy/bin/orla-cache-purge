@@ -1,0 +1,32 @@
+#!/bin/sh
+# Purges the Orla proxy cache. Runs as root through sudo (see sudoers/orla).
+#   orla-cache-purge <host-id>   removes the entries of one proxy host
+#   orla-cache-purge all         removes every cached entry
+# Cache keys start with "orla<host-id>|" (see nginx/nginx.conf), so the
+# entries of a host are found by their "KEY: " line.
+set -eu
+
+CACHE_DIR="/var/cache/orla/nginx/proxy"
+PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
+if [ "$#" -ne 1 ]; then
+    echo "uso: orla-cache-purge <id-do-host|all>" >&2
+    exit 2
+fi
+
+target="$1"
+[ -d "${CACHE_DIR}" ] || exit 0
+
+case "${target}" in
+    all)
+        find "${CACHE_DIR}" -mindepth 1 -type f -delete
+        ;;
+    *[!0-9]* | "")
+        echo "argumento inválido: ${target}" >&2
+        exit 2
+        ;;
+    *)
+        grep -rlZ -F --binary-files=text "KEY: orla${target}|" "${CACHE_DIR}" | xargs -0 -r rm -f
+        ;;
+esac

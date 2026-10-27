@@ -22,7 +22,9 @@ com UX inspirada no dashboard da Cloudflare.
    na borda da API e novamente no compilador.
 4. **Privilégio mínimo.** O painel roda como o usuário de sistema `orla`. O único
    acesso privilegiado é via sudoers com argumentos fixos:
-   `sudo -n /usr/sbin/nginx -t` e `sudo -n /usr/bin/systemctl reload nginx.service`.
+   `sudo -n /usr/sbin/nginx -t`, `sudo -n /usr/bin/systemctl reload nginx.service` e
+   `sudo -n /usr/lib/orla/bin/orla-cache-purge <id-do-host|all>` (o helper valida o
+   argumento).
 
 ## Processos (systemd)
 
@@ -65,7 +67,7 @@ O `deploy/install.sh` é idempotente (rodar de novo atualiza) e:
 4. gera `/etc/orla/orla.env` com `DATABASE_URL`, segredos JWT, chave de criptografia
    e a senha inicial do administrador;
 5. instala o `nginx.conf`, os servidores padrão e os snippets;
-6. instala `orla-nginx-prepare`, as unidades systemd, o sudoers e o logrotate;
+6. instala `orla-nginx-prepare`, `orla-cache-purge`, as unidades systemd, o sudoers e o logrotate;
 7. copia o código para `/opt/orla`, faz o build e aplica as migrações;
 8. reinicia o Nginx e habilita o `orla.service`.
 
@@ -125,7 +127,7 @@ orla/
 │   └── migrations/                  [1] migração inicial
 ├── deploy/                          [1] instalação nativa no Debian 13
 │   ├── install.sh
-│   ├── bin/orla-nginx-prepare
+│   ├── bin/{orla-nginx-prepare,orla-cache-purge}
 │   ├── env/orla.env.example
 │   ├── nginx/
 │   │   ├── nginx.conf
@@ -138,30 +140,27 @@ orla/
 ├── server/                          [2][3]
 │   ├── tsconfig.json
 │   └── src/
-│       ├── index.ts                 bootstrap (Fastify, jobs, sync inicial)
-│       ├── app.ts                   registro de plugins e rotas
+│       ├── index.ts                 bootstrap (admin inicial, sync no boot, jobs, shutdown)
+│       ├── app.ts                   Fastify: erros, auth, rotas em /api
+│       ├── context.ts               dependências compartilhadas (prisma, executor, serviços)
 │       ├── config/env.ts            variáveis de ambiente validadas com Zod
-│       ├── db/prisma.ts
-│       ├── lib/                     crypto (AES-GCM), erros HTTP, hashing
+│       ├── lib/                     crypto (AES-256-GCM), senhas (bcrypt/apr1), erros HTTP
+│       ├── plugins/                 auth (JWT + refresh cookie + papéis) e mapa de erros
 │       ├── nginx/                   [2] motor de configuração
 │       │   ├── sanitize.ts          validadores anti-injection (domínio, IP/CIDR, path, header)
 │       │   ├── capabilities.ts      leitura de runtime/capabilities.json
 │       │   ├── builder.ts           builder tipado de diretivas (escape e indentação)
-│       │   ├── templates/           proxy, ssl, redirects, headers, rate-limit,
-│       │   │                        upstreams, cache, access, maintenance
-│       │   ├── compiler.ts          banco → conjunto de arquivos (determinístico)
-│       │   └── executor.ts          snapshot, escrita, sudo nginx -t, reload, rollback
-│       ├── modules/                 [3] uma pasta por domínio: routes + schemas + service
-│       │   ├── auth/  users/  settings/  audit/
-│       │   ├── hosts/  upstreams/  locations/
-│       │   ├── certificates/        ACME (acme-client: HTTP-01 e DNS-01) + upload
-│       │   ├── redirects/  headers/
-│       │   ├── security/            rate limits, listas de IP, Basic Auth, presets
-│       │   ├── cache/               configuração e purge
-│       │   ├── analytics/           métricas agregadas
-│       │   └── logs/                live log viewer (SSE)
-│       └── jobs/                    renovação de certificados, coletor de log JSON,
-│                                    retenção de métricas
+│       │   ├── templates/           host (proxy, ssl, redirects, headers, cache, acesso),
+│       │   │                        upstreams, rate limits, listas de IP, htpasswd, manutenção
+│       │   ├── loader.ts            banco → snapshot tipado
+│       │   ├── compiler.ts          snapshot → conjunto de arquivos (determinístico)
+│       │   └── executor.ts          snapshot, escrita atômica, nginx -t, reload, rollback
+│       ├── services/                [3] config (transação banco + nginx), ACME, DNS-01,
+│       │                            certificados, auditoria, configurações, logs, purge
+│       ├── modules/                 [3] rotas REST: auth, users, hosts, host-rules,
+│       │                            upstreams, ip-lists, auth-realms, certificates,
+│       │                            dns-providers, analytics, logs, system
+│       └── jobs/                    coletor de log JSON, renovação de certificados, retenção
 └── web/                             [4][5]
     ├── index.html
     ├── vite.config.ts
@@ -205,6 +204,30 @@ Decisões relevantes:
 | Flexible | HTTPS | HTTP |
 | Full | HTTPS | HTTPS, `proxy_ssl_verify off` |
 | Full (Strict) | HTTPS | HTTPS, `proxy_ssl_verify on` + `proxy_ssl_trusted_certificate` + SNI |
+
+## API (Etapa 3)
+
+Todas as rotas ficam em `/api`, respondem JSON e exigem `Authorization: Bearer
+<token>` (exceto `/api/health` e o login). Papéis: `VIEWER` lê, `EDITOR` altera,
+`ADMIN` gerencia usuários, configurações, diretivas customizadas e purge global.
+
+| Área | Rotas |
+|---|---|
+| Sessão | `POST /auth/login`, `POST /auth/refresh` (cookie `orla_refresh`), `POST /auth/logout`, `GET /auth/me`, `POST /auth/change-password` |
+| Usuários | `GET/POST /users`, `PATCH/DELETE /users/:id` |
+| Proxy hosts | `GET/POST /hosts`, `GET/PATCH/DELETE /hosts/:id`, `PATCH /hosts/:id/toggles`, `PUT /hosts/:id/ip-lists`, `GET /hosts/:id/config`, `POST /hosts/preview`, `POST /hosts/:id/cache/purge` |
+| Regras por host | `/hosts/:id/{locations,redirects,header-rules,rate-limits}[/:ruleId]` |
+| Upstreams | `GET/POST /upstream-pools`, `GET/PUT/DELETE /upstream-pools/:id`, `PATCH /upstream-pools/:id/servers/:serverId` |
+| Segurança | `/ip-lists[/:id]` (+ `/entries`), `/auth-realms[/:id]` (+ `/users`) |
+| SSL/TLS | `GET /certificates[/:id]`, `POST /certificates/acme`, `POST /certificates/custom`, `POST /certificates/:id/renew`, `PATCH/DELETE /certificates/:id`, `/dns-providers[/:id]` |
+| Analytics e logs | `GET /analytics/{summary,timeseries,top}`, `GET /logs/recent`, `GET /logs/stream` (SSE, `?access_token=`) |
+| Sistema | `GET /health`, `GET /system/info`, `POST /system/{apply,validate,cache/purge}`, `GET /deployments`, `GET /audit-logs`, `GET/PUT /settings` |
+
+Toda alteração que afeta o Nginx roda em uma transação do banco: grava, recompila
+tudo a partir da transação, aplica com `nginx -t` e reload e só então faz o commit.
+Se o Nginx recusar, o banco volta ao estado anterior e a API responde `422
+NGINX_TEST_FAILED` com arquivo, linha e trecho do erro. Cada aplicação fica em
+`/deployments` e cada ação em `/audit-logs`.
 
 ## Segurança de rede do painel
 

@@ -11,6 +11,10 @@ const commandFromString = z
   .min(1)
   .transform((value) => value.split(/\s+/));
 
+/** Treats an empty value (`KEY=` in orla.env) as not set. */
+const optional = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess((value) => (typeof value === "string" && value.trim() === "" ? undefined : value), schema.optional());
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("production"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
@@ -30,9 +34,9 @@ const envSchema = z.object({
       "ORLA_ENCRYPTION_KEY deve ser uma chave de 32 bytes em base64",
     ),
 
-  ORLA_ADMIN_EMAIL: z.string().email().optional(),
-  ORLA_ADMIN_PASSWORD: z.string().min(10).optional(),
-  ORLA_ACME_EMAIL: z.string().email().optional(),
+  ORLA_ADMIN_EMAIL: optional(z.string().email()),
+  ORLA_ADMIN_PASSWORD: optional(z.string().min(10)),
+  ORLA_ACME_EMAIL: optional(z.string().email()),
 
   ORLA_NGINX_HOSTS_DIR: z.string().default("/etc/nginx/conf.d"),
   ORLA_NGINX_GENERATED_DIR: z.string().default("/etc/nginx/orla/generated"),

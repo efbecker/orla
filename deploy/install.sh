@@ -155,6 +155,7 @@ install_system_files() {
     log "Instalando unidades systemd, sudoers e logrotate"
     install -d -o root -g root -m 0755 "${LIB_DIR}" "${LIB_DIR}/bin"
     install -o root -g root -m 0755 "${DEPLOY_DIR}/bin/orla-nginx-prepare" "${LIB_DIR}/bin/orla-nginx-prepare"
+    install -o root -g root -m 0755 "${DEPLOY_DIR}/bin/orla-cache-purge" "${LIB_DIR}/bin/orla-cache-purge"
 
     install -d -o root -g root -m 0755 /etc/systemd/system/nginx.service.d
     install -o root -g root -m 0644 "${DEPLOY_DIR}/systemd/nginx.service.d/orla.conf" \
